@@ -45,9 +45,9 @@ npm run deploy
 
 ## Roadmap
 
-1. Lobby: nickname, avatar, create/join by code, host controls, reconnect (in progress)
-2. Rarity mode engine and UI
-3. Elimination mode
+1. Lobby: nickname, avatar, create/join by code, host controls, reconnect (done)
+2. Rarity mode engine and UI (done)
+3. Elimination mode (done)
 4. Public rooms and Quick Play
 5. Category content (40 curated lists with rarity tiers) and a content checker
 6. Polish: mobile, sounds, animations, rate limits

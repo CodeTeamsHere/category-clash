@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { EliminationView } from "../shared/engine/elimination";
+import type { PlayedAnswer, RarityView, TurnRecord } from "../shared/engine/rarity";
 import { ANSWER_MAX, type PlayerInfo, type RoomSnapshot } from "../shared/protocol";
-import type { RarityView, TurnRecord } from "../shared/engine/rarity";
 import type { RoomConnection } from "./useRoom";
+
+type Players = Map<string, PlayerInfo>;
 
 function useCountdown(deadline: number, clockOffset: number): number {
   const [now, setNow] = useState(() => Date.now() + clockOffset);
@@ -23,52 +26,56 @@ const REJECT_TEXT: Record<string, string> = {
 export function Game(props: { room: RoomSnapshot; conn: RoomConnection }) {
   const { room, conn } = props;
   const game = room.game!;
-  const players = new Map(room.players.map((p) => [p.id, p]));
+  const players: Players = new Map(room.players.map((p) => [p.id, p]));
   const me = conn.you ? players.get(conn.you) : undefined;
+  const hostAway = !room.players.some((p) => p.isHost && p.connected);
+  const canReturn = !!me?.isHost || hostAway;
+  const onBack = () => conn.send({ type: "back_to_lobby" });
 
   return (
     <section className="card game">
       <div className="game-top">
         <span className="muted">
-          Round {Math.min(game.round + 1, game.totalRounds)} / {game.totalRounds}
+          {game.mode === "rarity"
+            ? `Round ${Math.min(game.round + 1, game.totalRounds)} / ${game.totalRounds}`
+            : `Round ${game.round + 1} · first to ${game.settings.roundsToWin}`}
         </span>
         <span className="muted">Room {room.code}</span>
       </div>
-
-      {game.phase === "game_over" ? (
-        <FinalResults game={game} players={players} isHost={!!me?.isHost} onBack={() => conn.send({ type: "back_to_lobby" })} />
+      {game.mode === "rarity" ? (
+        <RarityGame game={game} players={players} conn={conn} canReturn={canReturn} onBack={onBack} />
       ) : (
-        <>
-          <h2 className="prompt">{game.prompt}</h2>
-          {game.phase === "turn" ? (
-            <TurnPanel game={game} players={players} conn={conn} />
-          ) : (
-            <RoundRecap game={game} players={players} conn={conn} />
-          )}
-          <PlayedList turns={game.turns} players={players} />
-          <Scoreboard game={game} players={players} />
-        </>
+        <EliminationGame game={game} players={players} conn={conn} canReturn={canReturn} onBack={onBack} />
       )}
     </section>
   );
 }
 
-function TurnPanel(props: { game: RarityView; players: Map<string, PlayerInfo>; conn: RoomConnection }) {
-  const { game, players, conn } = props;
-  const remaining = useCountdown(game.deadline, conn.clockOffset);
-  const total = game.settings.turnSeconds * 1000;
-  const current = game.currentPlayerId ? players.get(game.currentPlayerId) : undefined;
-  const myTurn = game.currentPlayerId === conn.you;
+interface ModeProps<G> {
+  game: G;
+  players: Players;
+  conn: RoomConnection;
+  canReturn: boolean;
+  onBack: () => void;
+}
+
+// ---------- shared pieces ----------
+
+function TurnPanel(props: { currentPlayerId: string | null; deadline: number; totalMs: number; turnKey: string; players: Players; conn: RoomConnection }) {
+  const { players, conn } = props;
+  const remaining = useCountdown(props.deadline, conn.clockOffset);
+  const current = props.currentPlayerId ? players.get(props.currentPlayerId) : undefined;
+  const myTurn = props.currentPlayerId === conn.you;
+  const urgent = remaining < 3000;
 
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const turnKey = `${game.round}:${game.turnIndex}`;
 
   // New turn: clear the box and focus it if it's ours.
   useEffect(() => {
     setText("");
     if (myTurn) inputRef.current?.focus();
-  }, [turnKey, myTurn]);
+  }, [props.turnKey, myTurn]);
 
   const rejection = conn.rejection && Date.now() - conn.rejection.at < 2500 ? conn.rejection : null;
 
@@ -81,7 +88,7 @@ function TurnPanel(props: { game: RarityView; players: Map<string, PlayerInfo>; 
   return (
     <div className="turn">
       <div className="timer" aria-hidden>
-        <div className="timer-fill" style={{ width: `${(remaining / total) * 100}%` }} />
+        <div className={urgent ? "timer-fill urgent" : "timer-fill"} style={{ width: `${(remaining / Math.max(1, props.totalMs)) * 100}%` }} />
       </div>
       <div className="turn-label">
         {myTurn ? (
@@ -91,7 +98,7 @@ function TurnPanel(props: { game: RarityView; players: Map<string, PlayerInfo>; 
             {current?.avatar} <strong>{current?.nickname ?? "..."}</strong> is thinking
           </span>
         )}
-        <span className="seconds">{Math.ceil(remaining / 1000)}s</span>
+        <span className={urgent ? "seconds urgent" : "seconds"}>{Math.ceil(remaining / 1000)}s</span>
       </div>
       {myTurn && (
         <form className="row" onSubmit={submit}>
@@ -121,95 +128,121 @@ function TurnPanel(props: { game: RarityView; players: Map<string, PlayerInfo>; 
   );
 }
 
-function RoundRecap(props: { game: RarityView; players: Map<string, PlayerInfo>; conn: RoomConnection }) {
-  const { game, players, conn } = props;
-  const remaining = useCountdown(game.deadline, conn.clockOffset);
-  const summary = game.roundSummaries[game.roundSummaries.length - 1];
-  const bestPlayer = summary?.best ? players.get(summary.best.playerId) : undefined;
-  const last = game.round + 1 >= game.totalRounds;
-
+function Who(props: { id: string; players: Players }) {
+  const p = props.players.get(props.id);
   return (
-    <div className="recap">
-      {summary?.best ? (
-        <p className="rare-find">
-          Best find: <strong>{summary.best.played.answer}</strong> by {bestPlayer?.avatar} {bestPlayer?.nickname}{" "}
-          <span className={`tier tier-${summary.best.played.tier}`}>
-            {summary.best.played.tierName} +{summary.best.played.points}
-          </span>
-        </p>
-      ) : (
-        <p className="muted">Nobody scored this round.</p>
-      )}
-      <p className="muted">
-        {last ? "Final results" : "Next round"} in {Math.ceil(remaining / 1000)}s
-      </p>
-    </div>
+    <span>
+      {p?.avatar} {p?.nickname ?? "?"}
+    </span>
   );
 }
 
-function PlayedList(props: { turns: TurnRecord[]; players: Map<string, PlayerInfo> }) {
+function TierBadge(props: { played: PlayedAnswer; showPoints: boolean }) {
+  const { played } = props;
+  return (
+    <span className={`tier tier-${played.tier}`}>
+      {played.tierName}
+      {props.showPoints ? ` +${played.points}` : ""}
+    </span>
+  );
+}
+
+function ReturnButton(props: { canReturn: boolean; onBack: () => void }) {
+  return props.canReturn ? (
+    <button type="button" className="primary" onClick={props.onBack}>
+      Back to lobby
+    </button>
+  ) : (
+    <p className="muted">Waiting for the host to start a new game...</p>
+  );
+}
+
+function Intermission(props: { deadline: number; conn: RoomConnection; label: string }) {
+  const remaining = useCountdown(props.deadline, props.conn.clockOffset);
+  return (
+    <p className="muted center">
+      {props.label} in {Math.ceil(remaining / 1000)}s
+    </p>
+  );
+}
+
+// ---------- Rarity ----------
+
+function RarityGame({ game, players, conn, canReturn, onBack }: ModeProps<RarityView>) {
+  if (game.phase === "game_over") return <RarityResults game={game} players={players} canReturn={canReturn} onBack={onBack} />;
+  const summary = game.roundSummaries[game.roundSummaries.length - 1];
+  const last = game.round + 1 >= game.totalRounds;
+  return (
+    <>
+      <h2 className="prompt">{game.prompt}</h2>
+      {game.phase === "turn" ? (
+        <TurnPanel
+          currentPlayerId={game.currentPlayerId}
+          deadline={game.deadline}
+          totalMs={game.settings.turnSeconds * 1000}
+          turnKey={`${game.round}:${game.turnIndex}`}
+          players={players}
+          conn={conn}
+        />
+      ) : (
+        <div className="recap">
+          {summary?.best ? (
+            <p className="rare-find">
+              Best find: <strong>{summary.best.played.answer}</strong> by <Who id={summary.best.playerId} players={players} />{" "}
+              <TierBadge played={summary.best.played} showPoints />
+            </p>
+          ) : (
+            <p className="muted">Nobody scored this round.</p>
+          )}
+          <Intermission deadline={game.deadline} conn={conn} label={last ? "Final results" : "Next round"} />
+        </div>
+      )}
+      <PlayedList turns={game.turns} players={players} showPoints />
+      <ol className="scores">
+        {rankBy(game.scores).map(([id, score]) => (
+          <li key={id} className={rowClass(id === game.currentPlayerId, players.get(id))}>
+            <Who id={id} players={players} />
+            <strong>{score}</strong>
+          </li>
+        ))}
+      </ol>
+    </>
+  );
+}
+
+function PlayedList(props: { turns: TurnRecord[]; players: Players; showPoints: boolean }) {
   if (props.turns.length === 0) return null;
   return (
     <ul className="played">
-      {props.turns.map((t, i) => {
-        const p = props.players.get(t.playerId);
-        return (
-          <li key={i} className={t.played ? "" : "miss"}>
+      {props.turns.map((t, i) => (
+        <li key={i} className={t.played ? "" : "miss"}>
+          <Who id={t.playerId} players={props.players} />
+          {t.played ? (
             <span>
-              {p?.avatar} {p?.nickname}
+              <strong>{t.played.answer}</strong> <TierBadge played={t.played} showPoints={props.showPoints} />
             </span>
-            {t.played ? (
-              <span>
-                <strong>{t.played.answer}</strong>{" "}
-                <span className={`tier tier-${t.played.tier}`}>
-                  {t.played.tierName} +{t.played.points}
-                </span>
-              </span>
-            ) : (
-              <span className="muted">{t.result === "timeout" ? "ran out of time" : "skipped"}</span>
-            )}
-          </li>
-        );
-      })}
+          ) : (
+            <span className="muted">{t.result === "timeout" ? "ran out of time" : "skipped"}</span>
+          )}
+        </li>
+      ))}
     </ul>
   );
 }
 
-function ranked(game: RarityView, players: Map<string, PlayerInfo>) {
-  return Object.entries(game.scores)
-    .map(([id, score]) => ({ id, score, player: players.get(id) }))
-    .sort((a, b) => b.score - a.score);
-}
-
-function Scoreboard(props: { game: RarityView; players: Map<string, PlayerInfo> }) {
+function RarityResults(props: { game: RarityView; players: Players; canReturn: boolean; onBack: () => void }) {
   const { game, players } = props;
-  return (
-    <ol className="scores">
-      {ranked(game, players).map(({ id, score, player }) => (
-        <li key={id} className={[id === game.currentPlayerId ? "active" : "", player?.connected ? "" : "offline"].join(" ")}>
-          <span>
-            {player?.avatar} {player?.nickname ?? "?"}
-          </span>
-          <strong>{score}</strong>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function FinalResults(props: { game: RarityView; players: Map<string, PlayerInfo>; isHost: boolean; onBack: () => void }) {
-  const { game, players } = props;
-  const rows = ranked(game, players);
-  const top = rows[0]?.score ?? 0;
+  const rows = rankBy(game.scores);
+  const top = rows[0]?.[1] ?? 0;
   return (
     <div className="final">
       <h2 className="prompt">Final scores</h2>
       <ol className="scores">
-        {rows.map(({ id, score, player }) => (
+        {rows.map(([id, score]) => (
           <li key={id} className={score === top && top > 0 ? "winner" : ""}>
             <span>
               {score === top && top > 0 ? "👑 " : ""}
-              {player?.avatar} {player?.nickname ?? "?"}
+              <Who id={id} players={players} />
             </span>
             <strong>{score}</strong>
           </li>
@@ -217,30 +250,146 @@ function FinalResults(props: { game: RarityView; players: Map<string, PlayerInfo
       </ol>
       <h3>Best finds</h3>
       <ul className="played">
-        {game.roundSummaries.map((s, i) => {
-          const p = s.best ? players.get(s.best.playerId) : undefined;
+        {game.roundSummaries.map((s, i) => (
+          <li key={i}>
+            <span className="muted">{s.prompt}</span>
+            {s.best ? (
+              <span>
+                <strong>{s.best.played.answer}</strong> {players.get(s.best.playerId)?.avatar} <TierBadge played={s.best.played} showPoints={false} />
+              </span>
+            ) : (
+              <span className="muted">-</span>
+            )}
+          </li>
+        ))}
+      </ul>
+      <ReturnButton canReturn={props.canReturn} onBack={props.onBack} />
+    </div>
+  );
+}
+
+// ---------- Elimination ----------
+
+function Hearts(props: { lives: number; max: number }) {
+  return (
+    <span className="hearts" aria-label={`${props.lives} lives`}>
+      {"❤️".repeat(props.lives)}
+      <span className="lost">{"🖤".repeat(Math.max(0, props.max - props.lives))}</span>
+    </span>
+  );
+}
+
+function EliminationGame({ game, players, conn, canReturn, onBack }: ModeProps<EliminationView>) {
+  if (game.phase === "game_over") return <EliminationResults game={game} players={players} canReturn={canReturn} onBack={onBack} />;
+  const answered = game.turns.filter((t) => t.result === "answered").length;
+  const seconds = Math.round(game.turnMs / 1000);
+  return (
+    <>
+      <h2 className="prompt">{game.prompt}</h2>
+      {game.phase === "turn" ? (
+        <>
+          <TurnPanel
+            currentPlayerId={game.currentPlayerId}
+            deadline={game.deadline}
+            totalMs={game.turnMs}
+            turnKey={`${game.round}:${game.turns.length}`}
+            players={players}
+            conn={conn}
+          />
+          <p className="muted small center">
+            {answered} answers so far · {seconds}s per turn{seconds > 5 ? ", shrinking every lap" : " (minimum)"}
+          </p>
+        </>
+      ) : (
+        <div className="recap">
+          {game.roundWinner ? (
+            <p className="rare-find">
+              <Who id={game.roundWinner} players={players} /> {game.matchWinner ? "wins the match!" : "survives the round!"}
+            </p>
+          ) : (
+            <p className="muted">No survivor this round.</p>
+          )}
+          <Intermission deadline={game.deadline} conn={conn} label={game.matchWinner ? "Final results" : "Next round"} />
+        </div>
+      )}
+
+      <ul className="scores">
+        {game.seats.map((id) => {
+          const lives = game.lives[id] ?? 0;
           return (
-            <li key={i}>
-              <span className="muted">{s.prompt}</span>
-              {s.best ? (
-                <span>
-                  <strong>{s.best.played.answer}</strong> {p?.avatar}{" "}
-                  <span className={`tier tier-${s.best.played.tier}`}>{s.best.played.tierName}</span>
+            <li key={id} className={[rowClass(id === game.currentPlayerId, players.get(id)), lives === 0 ? "out" : ""].join(" ")}>
+              <Who id={id} players={players} />
+              <span className="elim-stats">
+                <Hearts lives={lives} max={game.settings.lives} />
+                <span className="wins" title="Round wins">
+                  🏆 {game.wins[id] ?? 0}
                 </span>
-              ) : (
-                <span className="muted">-</span>
-              )}
+              </span>
             </li>
           );
         })}
       </ul>
-      {props.isHost ? (
-        <button type="button" className="primary" onClick={props.onBack}>
-          Back to lobby
-        </button>
-      ) : (
-        <p className="muted">Waiting for the host to start a new game...</p>
+
+      {game.turns.length > 0 && (
+        <ul className="played">
+          {[...game.turns].reverse().map((t, i) => (
+            <li key={game.turns.length - i} className={t.played ? "" : "miss"}>
+              <Who id={t.playerId} players={players} />
+              {t.played ? (
+                <span>
+                  <strong>{t.played.answer}</strong> <TierBadge played={t.played} showPoints={false} />
+                </span>
+              ) : (
+                <span className="boom">
+                  💥 {t.result === "timeout" ? "too slow" : "away"}
+                  {t.livesLeft === 0 ? ", out!" : ""}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
+    </>
+  );
+}
+
+function EliminationResults(props: { game: EliminationView; players: Players; canReturn: boolean; onBack: () => void }) {
+  const { game, players } = props;
+  return (
+    <div className="final">
+      <h2 className="prompt">{game.matchWinner ? <>👑 <Who id={game.matchWinner} players={players} /> wins!</> : "Match over"}</h2>
+      <ol className="scores">
+        {rankBy(game.wins).map(([id, wins]) => (
+          <li key={id} className={id === game.matchWinner ? "winner" : ""}>
+            <Who id={id} players={players} />
+            <strong>
+              {wins} round{wins === 1 ? "" : "s"}
+            </strong>
+          </li>
+        ))}
+      </ol>
+      <h3>Rounds</h3>
+      <ul className="played">
+        {game.roundSummaries.map((s, i) => (
+          <li key={i}>
+            <span className="muted">{s.prompt}</span>
+            <span>
+              {s.winnerId ? <Who id={s.winnerId} players={players} /> : "-"} <span className="muted">· {s.answers} answers</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <ReturnButton canReturn={props.canReturn} onBack={props.onBack} />
     </div>
   );
+}
+
+// ---------- helpers ----------
+
+function rankBy(values: Record<string, number>): [string, number][] {
+  return Object.entries(values).sort((a, b) => b[1] - a[1]);
+}
+
+function rowClass(active: boolean, player: PlayerInfo | undefined): string {
+  return [active ? "active" : "", player?.connected ? "" : "offline"].join(" ");
 }

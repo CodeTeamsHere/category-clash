@@ -7,7 +7,7 @@ import {
   validateNickname,
   type GameMode,
 } from "../shared/protocol";
-import type { RaritySettings } from "../shared/engine/rarity";
+import { MIN_PLAYERS } from "../shared/engine";
 import { Game } from "./Game";
 import { loadIdentity, saveIdentity, type Identity } from "./identity";
 import { useRoom, type RoomConnection } from "./useRoom";
@@ -145,6 +145,9 @@ function RoomScreen(props: { code: string; isPublic: boolean; identity: Identity
 const ROUND_OPTIONS = [3, 5, 7];
 const TURN_OPTIONS = [1, 2, 3];
 const SECOND_OPTIONS = [10, 15, 20, 30];
+const LIFE_OPTIONS = [1, 2, 3, 5];
+const START_SECOND_OPTIONS = [8, 12, 15, 20];
+const WIN_OPTIONS = [1, 2, 3];
 
 function Lobby(props: { code: string; conn: RoomConnection; onLeave: () => void }) {
   const { status, room, you, error, send } = props.conn;
@@ -153,7 +156,9 @@ function Lobby(props: { code: string; conn: RoomConnection; onLeave: () => void 
   const shareUrl = `${location.origin}/?room=${props.code}`;
 
   const setMode = (mode: GameMode) => send({ type: "set_mode", mode });
-  const setSetting = (settings: Partial<RaritySettings>) => send({ type: "set_settings", settings });
+  const setSetting = (mode: GameMode, settings: Record<string, number>) => send({ type: "set_settings", mode, settings });
+  const connectedCount = room?.players.filter((p) => p.connected).length ?? 0;
+  const needed = room ? MIN_PLAYERS[room.mode] : 1;
 
   return (
     <section className="card">
@@ -190,20 +195,26 @@ function Lobby(props: { code: string; conn: RoomConnection; onLeave: () => void 
 
           {room.mode === "rarity" ? (
             <div className="settings">
-              <SettingRow label="Rounds" options={ROUND_OPTIONS} value={room.settings.rounds} disabled={!isHost} onPick={(rounds) => setSetting({ rounds })} />
+              <SettingRow
+                label="Rounds"
+                options={ROUND_OPTIONS}
+                value={room.settings.rarity.rounds}
+                disabled={!isHost}
+                onPick={(rounds) => setSetting("rarity", { rounds })}
+              />
               <SettingRow
                 label="Turns each"
                 options={TURN_OPTIONS}
-                value={room.settings.turnsPerPlayer}
+                value={room.settings.rarity.turnsPerPlayer}
                 disabled={!isHost}
-                onPick={(turnsPerPlayer) => setSetting({ turnsPerPlayer })}
+                onPick={(turnsPerPlayer) => setSetting("rarity", { turnsPerPlayer })}
               />
               <SettingRow
                 label="Seconds"
                 options={SECOND_OPTIONS}
-                value={room.settings.turnSeconds}
+                value={room.settings.rarity.turnSeconds}
                 disabled={!isHost}
-                onPick={(turnSeconds) => setSetting({ turnSeconds })}
+                onPick={(turnSeconds) => setSetting("rarity", { turnSeconds })}
               />
               <p className="muted small">
                 Take turns naming things in the category. Rarer answers score more: Common 10, Solid 20, Sharp 40, Rare 70,
@@ -211,7 +222,33 @@ function Lobby(props: { code: string; conn: RoomConnection; onLeave: () => void 
               </p>
             </div>
           ) : (
-            <p className="muted">Elimination mode is coming soon.</p>
+            <div className="settings">
+              <SettingRow
+                label="Lives"
+                options={LIFE_OPTIONS}
+                value={room.settings.elimination.lives}
+                disabled={!isHost}
+                onPick={(lives) => setSetting("elimination", { lives })}
+              />
+              <SettingRow
+                label="Start secs"
+                options={START_SECOND_OPTIONS}
+                value={room.settings.elimination.startSeconds}
+                disabled={!isHost}
+                onPick={(startSeconds) => setSetting("elimination", { startSeconds })}
+              />
+              <SettingRow
+                label="Wins needed"
+                options={WIN_OPTIONS}
+                value={room.settings.elimination.roundsToWin}
+                disabled={!isHost}
+                onPick={(roundsToWin) => setSetting("elimination", { roundsToWin })}
+              />
+              <p className="muted small">
+                Take turns naming things in the category before your timer runs out. Too slow and you lose a life. The timer
+                gets shorter every lap. Last one standing wins the round.
+              </p>
+            </div>
           )}
 
           <ul className="players">
@@ -225,9 +262,17 @@ function Lobby(props: { code: string; conn: RoomConnection; onLeave: () => void 
             ))}
           </ul>
           {isHost ? (
-            <button type="button" className="primary big" disabled={room.mode !== "rarity" || status !== "open"} onClick={() => send({ type: "start_game" })}>
-              Start game
-            </button>
+            <>
+              <button
+                type="button"
+                className="primary big"
+                disabled={connectedCount < needed || status !== "open"}
+                onClick={() => send({ type: "start_game" })}
+              >
+                Start game
+              </button>
+              {connectedCount < needed && <p className="muted small center">Needs at least {needed} players. Share the code!</p>}
+            </>
           ) : (
             <p className="muted">Waiting for the host to start...</p>
           )}
