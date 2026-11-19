@@ -172,3 +172,142 @@ button.primary {
   color: var(--error);
   margin: 0;
 }
+
+.center {
+  text-align: center;
+}
+
+.small {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+button.big {
+  padding: 14px;
+  font-size: 1.1rem;
+}
+
+button.leave {
+  margin: 16px auto 0;
+  display: block;
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-label {
+  min-width: 84px;
+}
+
+.chip {
+  padding: 6px 12px;
+}
+
+.game-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+}
+
+.prompt {
+  text-align: center;
+  font-size: 1.8rem;
+  margin: 4px 0;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timer {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.timer-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.1s linear;
+}
+
+.turn-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1.1rem;
+}
+
+.seconds {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.recap {
+  text-align: center;
+}
+
+.rare-find {
+  font-size: 1.1rem;
+}
+
+.played,
+.scores {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.played li,
+.scores li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.played li.miss {
+  opacity: 0.6;
+}
+
+.scores li.active {
+  outline: 2px solid var(--accent);
+}
+
+.scores li.offline {
+  opacity: 0.5;
+}
+
+.scores li.winner {
+  background: rgba(255, 204, 51, 0.15);
+}
+
+.tier {
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.tier-1 { background: #3a3f63; color: #d6d9ef; }
+.tier-2 { background: #1f4d3a; color: #9ff0c6; }
+.tier-3 { background: #1f3f66; color: #9fd0ff; }
+.tier-4 { background: #4b2a6b; color: #e0b8ff; }
+.tier-5 { background: #6b4a10; color: #ffd76b; }
+
+.final h3 {
+  margin: 8px 0 0;
+}

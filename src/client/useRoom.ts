@@ -4,11 +4,15 @@ import type { Identity } from "./identity";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
+export type Rejection = Extract<ServerMessage, { type: "answer_rejected" }> & { at: number };
+
 export interface RoomConnection {
   status: ConnectionStatus;
   room: RoomSnapshot | null;
   you: string | null;
   error: string | null;
+  rejection: Rejection | null;
+  clockOffset: number; // serverTime ~= Date.now() + clockOffset
   send: (msg: ClientMessage) => void;
 }
 
@@ -18,6 +22,8 @@ export function useRoom(code: string, identity: Identity, isPublic: boolean): Ro
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [you, setYou] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rejection, setRejection] = useState<Rejection | null>(null);
+  const [clockOffset, setClockOffset] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -54,7 +60,10 @@ export function useRoom(code: string, identity: Identity, isPublic: boolean): Ro
         if (msg.type === "room") {
           setRoom(msg.room);
           setYou(msg.you);
+          setClockOffset(msg.serverNow - Date.now());
           setError(null);
+        } else if (msg.type === "answer_rejected") {
+          setRejection({ ...msg, at: Date.now() });
         } else if (msg.type === "error") {
           setError(msg.message);
         }
@@ -83,5 +92,5 @@ export function useRoom(code: string, identity: Identity, isPublic: boolean): Ro
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
 
-  return { status, room, you, error, send };
+  return { status, room, you, error, rejection, clockOffset, send };
 }

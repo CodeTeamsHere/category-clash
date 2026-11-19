@@ -7,8 +7,10 @@ import {
   validateNickname,
   type GameMode,
 } from "../shared/protocol";
+import type { RaritySettings } from "../shared/engine/rarity";
+import { Game } from "./Game";
 import { loadIdentity, saveIdentity, type Identity } from "./identity";
-import { useRoom } from "./useRoom";
+import { useRoom, type RoomConnection } from "./useRoom";
 
 interface Session {
   code: string;
@@ -22,7 +24,11 @@ function codeFromUrl(): string {
 
 export function App() {
   const [identity, setIdentity] = useState<Identity>(loadIdentity);
-  const [session, setSession] = useState<Session | null>(null);
+  // Reloading /?room=CODE with a saved nickname rejoins straight away (keeps your seat mid-game).
+  const [session, setSession] = useState<Session | null>(() => {
+    const code = codeFromUrl();
+    return code && validateNickname(identity.nickname) ? { code, isPublic: false } : null;
+  });
 
   const enter = (next: Identity, code: string, isPublic: boolean) => {
     saveIdentity(next);
@@ -40,7 +46,7 @@ export function App() {
     <main className="app">
       <h1 className="logo">Category Clash</h1>
       {session ? (
-        <Lobby code={session.code} isPublic={session.isPublic} identity={identity} onLeave={leave} />
+        <RoomScreen code={session.code} isPublic={session.isPublic} identity={identity} onLeave={leave} />
       ) : (
         <Home identity={identity} initialCode={codeFromUrl()} onEnter={enter} />
       )}
@@ -120,12 +126,34 @@ function Home(props: { identity: Identity; initialCode: string; onEnter: (id: Id
   );
 }
 
-function Lobby(props: { code: string; isPublic: boolean; identity: Identity; onLeave: () => void }) {
-  const { status, room, you, error, send } = useRoom(props.code, props.identity, props.isPublic);
+function RoomScreen(props: { code: string; isPublic: boolean; identity: Identity; onLeave: () => void }) {
+  const conn = useRoom(props.code, props.identity, props.isPublic);
+  if (conn.room?.status === "playing" && conn.room.game) {
+    return (
+      <>
+        {conn.status !== "open" && <p className="muted center">Reconnecting...</p>}
+        <Game room={conn.room} conn={conn} />
+        <button type="button" className="leave" onClick={props.onLeave}>
+          Leave room
+        </button>
+      </>
+    );
+  }
+  return <Lobby code={props.code} conn={conn} onLeave={props.onLeave} />;
+}
+
+const ROUND_OPTIONS = [3, 5, 7];
+const TURN_OPTIONS = [1, 2, 3];
+const SECOND_OPTIONS = [10, 15, 20, 30];
+
+function Lobby(props: { code: string; conn: RoomConnection; onLeave: () => void }) {
+  const { status, room, you, error, send } = props.conn;
   const me = room?.players.find((p) => p.id === you);
+  const isHost = !!me?.isHost;
   const shareUrl = `${location.origin}/?room=${props.code}`;
 
   const setMode = (mode: GameMode) => send({ type: "set_mode", mode });
+  const setSetting = (settings: Partial<RaritySettings>) => send({ type: "set_settings", settings });
 
   return (
     <section className="card">
@@ -151,7 +179,7 @@ function Lobby(props: { code: string; isPublic: boolean; identity: Identity; onL
                 key={m}
                 type="button"
                 className={room.mode === m ? "chip selected" : "chip"}
-                disabled={!me?.isHost}
+                disabled={!isHost}
                 onClick={() => setMode(m)}
               >
                 {m === "rarity" ? "Rarity" : "Elimination"}
@@ -159,6 +187,32 @@ function Lobby(props: { code: string; isPublic: boolean; identity: Identity; onL
             ))}
             <span className="muted">{room.isPublic ? "Public" : "Private"}</span>
           </div>
+
+          {room.mode === "rarity" ? (
+            <div className="settings">
+              <SettingRow label="Rounds" options={ROUND_OPTIONS} value={room.settings.rounds} disabled={!isHost} onPick={(rounds) => setSetting({ rounds })} />
+              <SettingRow
+                label="Turns each"
+                options={TURN_OPTIONS}
+                value={room.settings.turnsPerPlayer}
+                disabled={!isHost}
+                onPick={(turnsPerPlayer) => setSetting({ turnsPerPlayer })}
+              />
+              <SettingRow
+                label="Seconds"
+                options={SECOND_OPTIONS}
+                value={room.settings.turnSeconds}
+                disabled={!isHost}
+                onPick={(turnSeconds) => setSetting({ turnSeconds })}
+              />
+              <p className="muted small">
+                Take turns naming things in the category. Rarer answers score more: Common 10, Solid 20, Sharp 40, Rare 70,
+                Legendary 100. No repeats!
+              </p>
+            </div>
+          ) : (
+            <p className="muted">Elimination mode is coming soon.</p>
+          )}
 
           <ul className="players">
             {room.players.map((p) => (
@@ -170,7 +224,13 @@ function Lobby(props: { code: string; isPublic: boolean; identity: Identity; onL
               </li>
             ))}
           </ul>
-          <p className="muted">Game modes are coming next. Invite friends with the code above.</p>
+          {isHost ? (
+            <button type="button" className="primary big" disabled={room.mode !== "rarity" || status !== "open"} onClick={() => send({ type: "start_game" })}>
+              Start game
+            </button>
+          ) : (
+            <p className="muted">Waiting for the host to start...</p>
+          )}
         </>
       )}
 
@@ -178,5 +238,24 @@ function Lobby(props: { code: string; isPublic: boolean; identity: Identity; onL
         Leave room
       </button>
     </section>
+  );
+}
+
+function SettingRow(props: { label: string; options: number[]; value: number; disabled: boolean; onPick: (v: number) => void }) {
+  return (
+    <div className="row">
+      <span className="muted setting-label">{props.label}</span>
+      {props.options.map((o) => (
+        <button
+          key={o}
+          type="button"
+          className={o === props.value ? "chip selected" : "chip"}
+          disabled={props.disabled}
+          onClick={() => props.onPick(o)}
+        >
+          {o}
+        </button>
+      ))}
+    </div>
   );
 }
