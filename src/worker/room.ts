@@ -1,15 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 import { CATEGORIES, getCategory } from "../content";
 import {
-  RARITY_DEFAULTS,
-  clampSettings,
-  rarityView,
-  startRarity,
-  submitRarity,
-  tickRarity,
-  type RaritySettings,
-  type RarityState,
-} from "../shared/engine/rarity";
+  DEFAULT_SETTINGS,
+  MIN_PLAYERS,
+  clampModeSettings,
+  currentCategoryId,
+  startGame,
+  submitAnswer,
+  tickGame,
+  viewGame,
+  type GameSettings,
+  type GameState,
+} from "../shared/engine";
 import {
   ANSWER_MAX,
   MAX_PLAYERS,
@@ -41,8 +43,8 @@ interface RoomState {
   status: RoomSnapshot["status"];
   hostId: string | null;
   players: StoredPlayer[];
-  settings: RaritySettings;
-  game: RarityState | null;
+  settings: GameSettings;
+  game: GameState | null;
 }
 
 const STATE_KEY = "state";
@@ -62,10 +64,12 @@ export class Room extends DurableObject<Env> {
       status: "lobby",
       hostId: null,
       players: [],
-      settings: RARITY_DEFAULTS,
+      settings: DEFAULT_SETTINGS,
       game: null,
       ...stored, // older stored states may lack newer fields
     };
+    // Rooms saved before Elimination mode stored rarity settings flat.
+    if (!("rarity" in this.state.settings)) this.state.settings = DEFAULT_SETTINGS;
     return this.state;
   }
 
@@ -115,21 +119,24 @@ export class Room extends DurableObject<Env> {
       case "set_settings": {
         if (!isHost) return this.sendError(ws, "not_host", "Only the host can change settings");
         if (state.status !== "lobby") return this.sendError(ws, "bad_state", "Game in progress");
-        state.settings = clampSettings({ ...state.settings, ...msg.settings });
+        if (msg.mode !== "rarity" && msg.mode !== "elimination") return this.sendError(ws, "bad_message", "Unknown mode");
+        state.settings = clampModeSettings(msg.mode, state.settings, msg.settings ?? {});
         break;
       }
 
       case "start_game": {
         if (!isHost) return this.sendError(ws, "not_host", "Only the host can start");
         if (state.status !== "lobby") return this.sendError(ws, "bad_state", "Game already started");
-        if (state.mode !== "rarity") return this.sendError(ws, "not_supported", "Elimination mode is coming soon");
         const connected = this.connectedIds();
         const players = state.players.filter((p) => connected.has(p.id)).map((p) => p.id);
-        if (players.length === 0) return this.sendError(ws, "bad_state", "No players");
+        if (players.length < MIN_PLAYERS[state.mode]) {
+          return this.sendError(ws, "bad_state", `This mode needs at least ${MIN_PLAYERS[state.mode]} players`);
+        }
         state.players = state.players.filter((p) => connected.has(p.id)); // drop stale seats
-        const rounds = Math.min(state.settings.rounds, CATEGORIES.length);
-        const categoryIds = shuffle(CATEGORIES.map((c) => c.id)).slice(0, rounds);
-        state.game = startRarity(players, categoryIds, state.settings, Date.now(), connected, getCategory);
+        let categoryIds = shuffle(CATEGORIES.map((c) => c.id));
+        // Rarity uses one category per round; Elimination cycles through the shuffled list.
+        if (state.mode === "rarity") categoryIds = categoryIds.slice(0, Math.min(state.settings.rarity.rounds, categoryIds.length));
+        state.game = startGame(state.mode, players, categoryIds, state.settings, Date.now(), connected, getCategory);
         state.status = "playing";
         break;
       }
@@ -137,11 +144,11 @@ export class Room extends DurableObject<Env> {
       case "submit_answer": {
         if (!state.game) return this.sendError(ws, "bad_state", "No game running");
         const text = String(msg.text ?? "").slice(0, ANSWER_MAX);
-        const result = submitRarity(state.game, playerId, text, Date.now(), this.connectedIds(), getCategory);
+        const result = submitAnswer(state.game, playerId, text, Date.now(), this.connectedIds(), getCategory);
         if (!result.ok) {
           if (result.reason === "not_in_list") {
             // Logged for content curation: answers players expected to count.
-            console.log(JSON.stringify({ event: "miss", category: state.game.categoryIds[state.game.round], text }));
+            console.log(JSON.stringify({ event: "miss", category: currentCategoryId(state.game), text }));
           }
           return this.send(ws, { type: "answer_rejected", reason: result.reason, text, taken: result.taken });
         }
@@ -150,7 +157,12 @@ export class Room extends DurableObject<Env> {
       }
 
       case "back_to_lobby": {
-        if (!isHost) return this.sendError(ws, "not_host", "Only the host can do that");
+        // Anyone may do this when the host is gone, so a game can't get stuck on the results screen.
+        const hostAway = !state.hostId || !this.connectedIds().has(state.hostId);
+        if (!isHost && !hostAway) return this.sendError(ws, "not_host", "Only the host can do that");
+        if (state.game && state.game.phase !== "game_over" && !isHost) {
+          return this.sendError(ws, "bad_state", "Game still running");
+        }
         this.resetToLobby(state);
         break;
       }
@@ -198,7 +210,7 @@ export class Room extends DurableObject<Env> {
       await this.save();
       return;
     }
-    state.game = tickRarity(state.game, Date.now(), connected, getCategory);
+    state.game = tickGame(state.game, Date.now(), connected, getCategory);
     await this.commit();
   }
 
@@ -226,8 +238,11 @@ export class Room extends DurableObject<Env> {
     }
     if (this.isConnected(playerId)) return; // another tab still holds the seat
 
-    // In the lobby, leaving frees the seat. During a game it is kept for reconnect.
-    if (state.status === "lobby") state.players = state.players.filter((p) => p.id !== playerId);
+    // In the lobby, leaving frees the seat (and the host role).
+    // During a game the seat and host role are kept so a reload doesn't cost them;
+    // resetToLobby() hands the host role on if the host never came back.
+    if (state.status === "playing") return this.commit();
+    state.players = state.players.filter((p) => p.id !== playerId);
     if (state.hostId === playerId) {
       const next = state.players.find((p) => p.id !== playerId && this.isConnected(p.id));
       state.hostId = next?.id ?? null;
@@ -296,7 +311,7 @@ export class Room extends DurableObject<Env> {
       status: state.status,
       players,
       settings: state.settings,
-      game: state.game ? rarityView(state.game, getCategory) : null,
+      game: state.game ? viewGame(state.game, getCategory) : null,
     };
   }
 

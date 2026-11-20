@@ -1,7 +1,10 @@
 // Messages exchanged over the room WebSocket. The server is authoritative:
 // clients send intents, the Room Durable Object validates them and broadcasts state.
 
-import type { RaritySettings, RarityView, RejectReason } from "./engine/rarity";
+import type { GameMode, GameSettings, GameView } from "./engine";
+import type { RejectReason } from "./engine/rarity";
+
+export type { GameMode, GameSettings, GameView };
 
 export const MAX_PLAYERS = 10;
 export const NICKNAME_MIN = 2;
@@ -10,8 +13,6 @@ export const ANSWER_MAX = 60;
 
 export const AVATARS = ["🦊", "🐙", "🐸", "🦉", "🐼", "🦄", "🐢", "🦖", "🐝", "🐳", "🦀", "🐧"] as const;
 export type Avatar = (typeof AVATARS)[number];
-
-export type GameMode = "rarity" | "elimination";
 
 export interface PlayerInfo {
   id: string;
@@ -27,14 +28,14 @@ export interface RoomSnapshot {
   isPublic: boolean;
   status: "lobby" | "playing";
   players: PlayerInfo[];
-  settings: RaritySettings;
-  game: RarityView | null;
+  settings: GameSettings;
+  game: GameView | null;
 }
 
 export type ClientMessage =
   | { type: "join"; playerId: string; nickname: string; avatar: string; isPublic?: boolean }
   | { type: "set_mode"; mode: GameMode }
-  | { type: "set_settings"; settings: Partial<RaritySettings> }
+  | { type: "set_settings"; mode: GameMode; settings: Record<string, number> }
   | { type: "start_game" }
   | { type: "submit_answer"; text: string }
   | { type: "back_to_lobby" }

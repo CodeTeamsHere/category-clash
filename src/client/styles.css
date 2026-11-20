@@ -311,3 +311,40 @@ button.leave {
 .final h3 {
   margin: 8px 0 0;
 }
+
+.timer-fill.urgent {
+  background: var(--error);
+}
+
+.seconds.urgent {
+  color: var(--error);
+}
+
+.elim-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hearts {
+  letter-spacing: 1px;
+  font-size: 0.85rem;
+}
+
+.hearts .lost {
+  opacity: 0.35;
+}
+
+.wins {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.scores li.out {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
+.boom {
+  color: var(--error);
+}
